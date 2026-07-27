@@ -58,10 +58,10 @@ class ModFilterWidget : public QTabWidget {
     Q_OBJECT
    public:
     struct Filter {
-        std::list<Version> versions;
-        std::list<ModPlatform::IndexedVersionType> releases;
+        std::vector<Version> versions;
+        std::vector<ModPlatform::IndexedVersionType> releases;
         ModPlatform::ModLoaderTypes loaders;
-        ModPlatform::Side side;
+        ModPlatform::SideType side;
         bool hideInstalled;
         QStringList categoryIds;
         bool openSource;

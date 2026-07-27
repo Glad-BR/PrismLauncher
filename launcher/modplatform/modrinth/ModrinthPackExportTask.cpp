@@ -23,10 +23,12 @@
 #include <QFileInfo>
 #include <QMessageBox>
 #include <QtConcurrentRun>
+#include <algorithm>
+#include <utility>
 #include "Json.h"
 #include "MMCZip.h"
+#include "archive/ExportToZipTask.h"
 #include "minecraft/PackProfile.h"
-#include "minecraft/mod/MetadataHandler.h"
 #include "minecraft/mod/ModFolderModel.h"
 #include "modplatform/ModIndex.h"
 #include "modplatform/helpers/HashUtils.h"
@@ -39,7 +41,7 @@ ModrinthPackExportTask::ModrinthPackExportTask(const QString& name,
                                                const QString& version,
                                                const QString& summary,
                                                bool optionalFiles,
-                                               InstancePtr instance,
+                                               BaseInstance* instance,
                                                const QString& output,
                                                MMCZip::FilterFileFunction filter)
     : name(name)
@@ -47,10 +49,10 @@ ModrinthPackExportTask::ModrinthPackExportTask(const QString& name,
     , summary(summary)
     , optionalFiles(optionalFiles)
     , instance(instance)
-    , mcInstance(dynamic_cast<MinecraftInstance*>(instance.get()))
+    , mcInstance(dynamic_cast<MinecraftInstance*>(instance))
     , gameRoot(instance->gameRoot())
     , output(output)
-    , filter(filter)
+    , filter(std::move(filter))
 {}
 
 void ModrinthPackExportTask::executeTask()
@@ -85,9 +87,10 @@ void ModrinthPackExportTask::collectFiles()
 
     if (mcInstance) {
         mcInstance->loaderModList()->update();
-        connect(mcInstance->loaderModList().get(), &ModFolderModel::updateFinished, this, &ModrinthPackExportTask::collectHashes);
-    } else
+        connect(mcInstance->loaderModList(), &ModFolderModel::updateFinished, this, &ModrinthPackExportTask::collectHashes);
+    } else {
         collectHashes();
+    }
 }
 
 void ModrinthPackExportTask::collectHashes()
@@ -98,22 +101,24 @@ void ModrinthPackExportTask::collectHashes()
 
         const QString relative = gameRoot.relativeFilePath(file.absoluteFilePath());
         // require sensible file types
-        if (!std::any_of(PREFIXES.begin(), PREFIXES.end(), [&relative](const QString& prefix) { return relative.startsWith(prefix); }))
+        if (!std::ranges::any_of(PREFIXES, [&relative](const QString& prefix) { return relative.startsWith(prefix); })) {
             continue;
-        if (!std::any_of(FILE_EXTENSIONS.begin(), FILE_EXTENSIONS.end(), [&relative](const QString& extension) {
+        }
+        if (!std::ranges::any_of(FILE_EXTENSIONS, [&relative](const QString& extension) {
                 return relative.endsWith('.' + extension) || relative.endsWith('.' + extension + ".disabled");
-            }))
+            })) {
             continue;
+        }
 
         QFile openFile(file.absoluteFilePath());
         if (!openFile.open(QFile::ReadOnly)) {
-            qWarning() << "Could not open" << file << "for hashing";
+            qWarning() << "Could not open" << file << "for hashing:" << openFile.errorString();
             continue;
         }
 
         const QByteArray data = openFile.readAll();
         if (openFile.error() != QFileDevice::NoError) {
-            qWarning() << "Could not read" << file;
+            qWarning() << "Could not read" << file << "error:" << openFile.errorString();
             continue;
         }
         auto sha512 = Hashing::hash(data, Hashing::Algorithm::Sha512);
@@ -150,12 +155,12 @@ void ModrinthPackExportTask::collectHashes()
 
 void ModrinthPackExportTask::makeApiRequest()
 {
-    if (pendingHashes.isEmpty())
+    if (pendingHashes.isEmpty()) {
         buildZip();
-    else {
+    } else {
         setStatus(tr("Finding versions for hashes..."));
-        auto response = std::make_shared<QByteArray>();
-        task = api.currentVersions(pendingHashes.values(), "sha512", response);
+        auto [versionsTask, response] = api.currentVersions(pendingHashes.values(), "sha512");
+        task = versionsTask;
         connect(task.get(), &Task::succeeded, [this, response]() { parseApiResponse(response); });
         connect(task.get(), &Task::failed, this, &ModrinthPackExportTask::emitFailed);
         connect(task.get(), &Task::aborted, this, &ModrinthPackExportTask::emitAborted);
@@ -163,7 +168,7 @@ void ModrinthPackExportTask::makeApiRequest()
     }
 }
 
-void ModrinthPackExportTask::parseApiResponse(const std::shared_ptr<QByteArray> response)
+void ModrinthPackExportTask::parseApiResponse(QByteArray* response)
 {
     task = nullptr;
 
@@ -175,17 +180,19 @@ void ModrinthPackExportTask::parseApiResponse(const std::shared_ptr<QByteArray> 
             iterator.next();
 
             const QJsonObject obj = doc[iterator.value()].toObject();
-            if (obj.isEmpty())
+            if (obj.isEmpty()) {
                 continue;
+            }
 
             const QJsonArray files_array = obj["files"].toArray();
             if (auto fileIter = std::find_if(files_array.begin(), files_array.end(),
                                              [&iterator](const QJsonValue& file) { return file["hashes"]["sha512"] == iterator.value(); });
                 fileIter != files_array.end()) {
                 // map the file to the url
-                resolvedFiles[iterator.key()] =
-                    ResolvedFile{ fileIter->toObject()["hashes"].toObject()["sha1"].toString(), iterator.value(),
-                                  fileIter->toObject()["url"].toString(), fileIter->toObject()["size"].toInt() };
+                resolvedFiles[iterator.key()] = ResolvedFile{ .sha1 = fileIter->toObject()["hashes"].toObject()["sha1"].toString(),
+                                                              .sha512 = iterator.value(),
+                                                              .url = fileIter->toObject()["url"].toString(),
+                                                              .size = fileIter->toObject()["size"].toInt() };
             }
         }
     } catch (const Json::JsonException& e) {
@@ -200,7 +207,7 @@ void ModrinthPackExportTask::buildZip()
 {
     setStatus(tr("Adding files..."));
 
-    auto zipTask = makeShared<MMCZip::ExportToZipTask>(output, gameRoot, files, "overrides/", true, true);
+    auto zipTask = makeShared<MMCZip::ExportToZipTask>(output, gameRoot, files, "overrides/", true);
     zipTask->addExtraFile("modrinth.index.json", generateIndex());
 
     zipTask->setExcludeFiles(resolvedFiles.keys());
@@ -216,7 +223,7 @@ void ModrinthPackExportTask::buildZip()
     connect(zipTask.get(), &Task::failed, this, [this, progressStep](QString reason) {
         progressStep->state = TaskStepState::Failed;
         stepProgress(*progressStep);
-        emitFailed(reason);
+        emitFailed(std::move(reason));
     });
     connect(zipTask.get(), &Task::stepProgress, this, &ModrinthPackExportTask::propagateStepProgress);
 
@@ -225,7 +232,7 @@ void ModrinthPackExportTask::buildZip()
         stepProgress(*progressStep);
     });
     connect(zipTask.get(), &Task::status, this, [this, progressStep](QString status) {
-        progressStep->status = status;
+        progressStep->status = std::move(status);
         stepProgress(*progressStep);
     });
     task.reset(zipTask);
@@ -239,11 +246,12 @@ QByteArray ModrinthPackExportTask::generateIndex()
     out["game"] = "minecraft";
     out["name"] = name;
     out["versionId"] = version;
-    if (!summary.isEmpty())
+    if (!summary.isEmpty()) {
         out["summary"] = summary;
+    }
 
     if (mcInstance) {
-        auto profile = mcInstance->getPackProfile();
+        auto* profile = mcInstance->getPackProfile();
         // collect all supported components
         const ComponentPtr minecraft = profile->getComponent("net.minecraft");
         const ComponentPtr quilt = profile->getComponent("org.quiltmc.quilt-loader");
@@ -253,16 +261,21 @@ QByteArray ModrinthPackExportTask::generateIndex()
 
         // convert all available components to mrpack dependencies
         QJsonObject dependencies;
-        if (minecraft != nullptr)
+        if (minecraft != nullptr) {
             dependencies["minecraft"] = minecraft->m_version;
-        if (quilt != nullptr)
+        }
+        if (quilt != nullptr) {
             dependencies["quilt-loader"] = quilt->m_version;
-        if (fabric != nullptr)
+        }
+        if (fabric != nullptr) {
             dependencies["fabric-loader"] = fabric->m_version;
-        if (forge != nullptr)
+        }
+        if (forge != nullptr) {
             dependencies["forge"] = forge->m_version;
-        if (neoForge != nullptr)
+        }
+        if (neoForge != nullptr) {
             dependencies["neoforge"] = neoForge->m_version;
+        }
 
         out["dependencies"] = dependencies;
     }
@@ -290,8 +303,9 @@ QByteArray ModrinthPackExportTask::generateIndex()
 
         // a server side mod does not imply that the mod does not work on the client
         // however, if a mrpack mod is marked as server-only it will not install on the client
-        if (iterator->side == ModPlatform::Side::ClientSide)
+        if (iterator->side == ModPlatform::SideType::ClientSide) {
             env["server"] = "unsupported";
+        }
 
         fileOut["env"] = env;
 

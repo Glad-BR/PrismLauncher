@@ -26,48 +26,50 @@
 #include "minecraft/PackProfile.h"
 #include "modplatform/ModIndex.h"
 
-static ModrinthAPI api;
-
-bool shouldDownloadOnSide(QString side)
+bool shouldDownloadOnSide(const QString& side)
 {
     return side == "required" || side == "optional";
 }
 
-// https://docs.modrinth.com/api-spec/#tag/projects/operation/getProject
+// https://docs.modrinth.com/api/operations/getproject/
 void Modrinth::loadIndexedPack(ModPlatform::IndexedPack& pack, QJsonObject& obj)
 {
-    pack.addonId = Json::ensureString(obj, "project_id");
-    if (pack.addonId.toString().isEmpty())
+    pack.addonId = obj["project_id"].toString();
+    if (pack.addonId.toString().isEmpty()) {
         pack.addonId = Json::requireString(obj, "id");
+    }
 
     pack.provider = ModPlatform::ResourceProvider::MODRINTH;
     pack.name = Json::requireString(obj, "title");
 
-    pack.slug = Json::ensureString(obj, "slug", "");
-    if (!pack.slug.isEmpty())
+    pack.slug = obj["slug"].toString("");
+    if (!pack.slug.isEmpty()) {
         pack.websiteUrl = "https://modrinth.com/mod/" + pack.slug;
-    else
+    } else {
         pack.websiteUrl = "";
+    }
 
-    pack.description = Json::ensureString(obj, "description", "");
+    pack.description = obj["description"].toString("");
 
-    pack.logoUrl = Json::ensureString(obj, "icon_url", "");
-    pack.logoName = QString("%1.%2").arg(Json::ensureString(obj, "slug"), QFileInfo(QUrl(pack.logoUrl).fileName()).suffix());
+    pack.logoUrl = obj["icon_url"].toString("");
+    pack.logoName = QString("%1.%2").arg(obj["slug"].toString(), QFileInfo(QUrl(pack.logoUrl).fileName()).suffix());
 
-    ModPlatform::ModpackAuthor modAuthor;
-    modAuthor.name = Json::ensureString(obj, "author", QObject::tr("No author(s)"));
-    modAuthor.url = api.getAuthorURL(modAuthor.name);
-    pack.authors.append(modAuthor);
+    if (obj.contains("author")) {
+        ModPlatform::ModpackAuthor modAuthor;
+        modAuthor.name = obj["author"].toString();
+        modAuthor.url = ModrinthAPI::getAuthorURL(modAuthor.name);
+        pack.authors = { modAuthor };
+    }
 
-    auto client = shouldDownloadOnSide(Json::ensureString(obj, "client_side"));
-    auto server = shouldDownloadOnSide(Json::ensureString(obj, "server_side"));
+    auto client = shouldDownloadOnSide(obj["client_side"].toString());
+    auto server = shouldDownloadOnSide(obj["server_side"].toString());
 
     if (server && client) {
-        pack.side = ModPlatform::Side::UniversalSide;
+        pack.side = ModPlatform::SideType::UniversalSide;
     } else if (server) {
-        pack.side = ModPlatform::Side::ServerSide;
+        pack.side = ModPlatform::SideType::ServerSide;
     } else if (client) {
-        pack.side = ModPlatform::Side::ClientSide;
+        pack.side = ModPlatform::SideType::ClientSide;
     }
 
     // Modrinth can have more data than what's provided by the basic search :)
@@ -76,43 +78,46 @@ void Modrinth::loadIndexedPack(ModPlatform::IndexedPack& pack, QJsonObject& obj)
 
 void Modrinth::loadExtraPackData(ModPlatform::IndexedPack& pack, QJsonObject& obj)
 {
-    pack.extraData.issuesUrl = Json::ensureString(obj, "issues_url");
+    pack.extraData.issuesUrl = obj["issues_url"].toString();
     if (pack.extraData.issuesUrl.endsWith('/'))
         pack.extraData.issuesUrl.chop(1);
 
-    pack.extraData.sourceUrl = Json::ensureString(obj, "source_url");
+    pack.extraData.sourceUrl = obj["source_url"].toString();
     if (pack.extraData.sourceUrl.endsWith('/'))
         pack.extraData.sourceUrl.chop(1);
 
-    pack.extraData.wikiUrl = Json::ensureString(obj, "wiki_url");
+    pack.extraData.wikiUrl = obj["wiki_url"].toString();
     if (pack.extraData.wikiUrl.endsWith('/'))
         pack.extraData.wikiUrl.chop(1);
 
-    pack.extraData.discordUrl = Json::ensureString(obj, "discord_url");
-    if (pack.extraData.discordUrl.endsWith('/'))
+    pack.extraData.discordUrl = obj["discord_url"].toString();
+    if (pack.extraData.discordUrl.endsWith('/')) {
         pack.extraData.discordUrl.chop(1);
+    }
 
-    auto donate_arr = Json::ensureArray(obj, "donation_urls");
+    auto donate_arr = obj["donation_urls"].toArray();
     for (auto d : donate_arr) {
         auto d_obj = Json::requireObject(d);
 
         ModPlatform::DonationData donate;
 
-        donate.id = Json::ensureString(d_obj, "id");
-        donate.platform = Json::ensureString(d_obj, "platform");
-        donate.url = Json::ensureString(d_obj, "url");
+        donate.id = d_obj["id"].toString();
+        donate.platform = d_obj["platform"].toString();
+        donate.url = d_obj["url"].toString();
 
         pack.extraData.donate.append(donate);
     }
 
-    pack.extraData.status = Json::ensureString(obj, "status");
+    pack.extraData.status = obj["status"].toString();
 
-    pack.extraData.body = Json::ensureString(obj, "body").remove("<br>");
+    pack.extraData.body = obj["body"].toString().remove("<br>");
 
     pack.extraDataLoaded = true;
 }
 
-ModPlatform::IndexedVersion Modrinth::loadIndexedPackVersion(QJsonObject& obj, QString preferred_hash_type, QString preferred_file_name)
+ModPlatform::IndexedVersion Modrinth::loadIndexedPackVersion(QJsonObject& obj,
+                                                             const QString& preferred_hash_type,
+                                                             const QString& preferred_file_name)
 {
     ModPlatform::IndexedVersion file;
 
@@ -124,47 +129,52 @@ ModPlatform::IndexedVersion Modrinth::loadIndexedPackVersion(QJsonObject& obj, Q
         return {};
     }
     for (auto mcVer : versionArray) {
-        file.mcVersion.append(ModrinthAPI::mapMCVersionFromModrinth(mcVer.toString()));
+        file.mcVersion.append({ ModrinthAPI::mapMCVersionFromModrinth(mcVer.toString()),
+                                mcVer.toString() });  // double this so we can check both strings when filtering
     }
     auto loaders = Json::requireArray(obj, "loaders");
     for (auto loader : loaders) {
-        if (loader == "neoforge")
+        if (loader == "neoforge") {
             file.loaders |= ModPlatform::NeoForge;
-        else if (loader == "forge")
+        } else if (loader == "forge") {
             file.loaders |= ModPlatform::Forge;
-        else if (loader == "cauldron")
+        } else if (loader == "cauldron") {
             file.loaders |= ModPlatform::Cauldron;
-        else if (loader == "liteloader")
+        } else if (loader == "liteloader") {
             file.loaders |= ModPlatform::LiteLoader;
-        else if (loader == "fabric")
+        } else if (loader == "fabric") {
             file.loaders |= ModPlatform::Fabric;
-        else if (loader == "quilt")
+        } else if (loader == "quilt") {
             file.loaders |= ModPlatform::Quilt;
+        }
     }
     file.version = Json::requireString(obj, "name");
     file.version_number = Json::requireString(obj, "version_number");
-    file.version_type = ModPlatform::IndexedVersionType(Json::requireString(obj, "version_type"));
+    file.version_type = ModPlatform::IndexedVersionType::fromString(Json::requireString(obj, "version_type"));
 
-    file.changelog = Json::requireString(obj, "changelog");
+    if (obj.contains("changelog")) {
+        file.changelog = Json::requireString(obj, "changelog");
+    }
 
-    auto dependencies = Json::ensureArray(obj, "dependencies");
+    auto dependencies = obj["dependencies"].toArray();
     for (auto d : dependencies) {
-        auto dep = Json::ensureObject(d);
+        auto dep = d.toObject();
         ModPlatform::Dependency dependency;
-        dependency.addonId = Json::ensureString(dep, "project_id");
-        dependency.version = Json::ensureString(dep, "version_id");
+        dependency.addonId = dep["project_id"].toString();
+        dependency.version = dep["version_id"].toString();
         auto depType = Json::requireString(dep, "dependency_type");
 
-        if (depType == "required")
+        if (depType == "required") {
             dependency.type = ModPlatform::DependencyType::REQUIRED;
-        else if (depType == "optional")
+        } else if (depType == "optional") {
             dependency.type = ModPlatform::DependencyType::OPTIONAL;
-        else if (depType == "incompatible")
+        } else if (depType == "incompatible") {
             dependency.type = ModPlatform::DependencyType::INCOMPATIBLE;
-        else if (depType == "embedded")
+        } else if (depType == "embedded") {
             dependency.type = ModPlatform::DependencyType::EMBEDDED;
-        else
+        } else {
             dependency.type = ModPlatform::DependencyType::UNKNOWN;
+        }
 
         file.dependencies.append(dependency);
     }
@@ -192,8 +202,9 @@ ModPlatform::IndexedVersion Modrinth::loadIndexedPackVersion(QJsonObject& obj, Q
         }
 
         // Grab the primary file, if available
-        if (Json::requireBoolean(parent, "primary"))
+        if (Json::requireBoolean(parent, "primary")) {
             break;
+        }
 
         i++;
     }

@@ -42,9 +42,11 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QUuid>
 
 #include "Application.h"
 #include "Json.h"
+#include "launch/LaunchTask.h"
 #include "settings/INISettingsObject.h"
 #include "settings/OverrideSetting.h"
 #include "settings/Setting.h"
@@ -53,7 +55,7 @@
 #include "Commandline.h"
 #include "FileSystem.h"
 
-int getConsoleMaxLines(SettingsObjectPtr settings)
+int getConsoleMaxLines(SettingsObject* settings)
 {
     auto lineSetting = settings->getSetting("ConsoleMaxLines");
     bool conversionOk = false;
@@ -65,14 +67,14 @@ int getConsoleMaxLines(SettingsObjectPtr settings)
     return maxLines;
 }
 
-bool shouldStopOnConsoleOverflow(SettingsObjectPtr settings)
+bool shouldStopOnConsoleOverflow(SettingsObject* settings)
 {
     return settings->get("ConsoleOverflowStop").toBool();
 }
 
-BaseInstance::BaseInstance(SettingsObjectPtr globalSettings, SettingsObjectPtr settings, const QString& rootDir) : QObject()
+BaseInstance::BaseInstance(SettingsObject* globalSettings, std::unique_ptr<SettingsObject> settings, const QString& rootDir) : QObject()
 {
-    m_settings = settings;
+    m_settings = std::move(settings);
     m_global_settings = globalSettings;
     m_rootDir = rootDir;
 
@@ -88,6 +90,10 @@ BaseInstance::BaseInstance(SettingsObjectPtr globalSettings, SettingsObjectPtr s
 
     m_settings->registerSetting("linkedInstances", "[]");
     m_settings->registerSetting("shortcuts", QString());
+    m_settings->registerSetting("uuid", QString());
+    if (m_settings->get("uuid").toString().isEmpty()) {
+        regenerateUuid();
+    }
 
     // Game time override
     auto gameTimeOverride = m_settings->registerSetting("OverrideGameTime", false);
@@ -122,9 +128,12 @@ BaseInstance::BaseInstance(SettingsObjectPtr globalSettings, SettingsObjectPtr s
     m_settings->registerSetting("ManagedPackName", "");
     m_settings->registerSetting("ManagedPackVersionID", "");
     m_settings->registerSetting("ManagedPackVersionName", "");
+    m_settings->registerSetting("ManagedPackURL", "");
 
     m_settings->registerSetting("Profiler", "");
 }
+
+BaseInstance::~BaseInstance() {}
 
 QString BaseInstance::getPreLaunchCommand()
 {
@@ -265,6 +274,16 @@ QString BaseInstance::id() const
     return QFileInfo(instanceRoot()).fileName();
 }
 
+QString BaseInstance::uuid() const
+{
+    return m_settings->get("uuid").toString();
+}
+
+void BaseInstance::regenerateUuid()
+{
+    m_settings->set("uuid", QUuid::createUuid().toString(QUuid::Id128));
+}
+
 bool BaseInstance::isRunning() const
 {
     return m_isRunning;
@@ -335,11 +354,11 @@ QString BaseInstance::instanceRoot() const
     return m_rootDir;
 }
 
-SettingsObjectPtr BaseInstance::settings()
+SettingsObject* BaseInstance::settings()
 {
     loadSpecificSettings();
 
-    return m_settings;
+    return m_settings.get();
 }
 
 bool BaseInstance::canLaunch() const
@@ -442,7 +461,7 @@ QList<ShortcutData> BaseInstance::shortcuts() const
 
         QString shortcutName = dict["name"].toString();
         QString filePath = dict["filePath"].toString();
-        if (!QDir(filePath).exists()) {
+        if (!QFileInfo::exists(filePath)) {
             qWarning() << "Shortcut" << shortcutName << "for instance" << name() << "have non-existent path" << filePath;
             continue;
         }
@@ -467,9 +486,9 @@ QStringList BaseInstance::extraArguments()
     return Commandline::splitArgs(settings()->get("JvmArgs").toString());
 }
 
-shared_qobject_ptr<LaunchTask> BaseInstance::getLaunchTask()
+LaunchTask* BaseInstance::getLaunchTask()
 {
-    return m_launchProcess;
+    return m_launchProcess.get();
 }
 
 void BaseInstance::updateRuntimeContext()

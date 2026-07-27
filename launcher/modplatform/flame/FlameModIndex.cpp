@@ -2,12 +2,8 @@
 
 #include "FileSystem.h"
 #include "Json.h"
-#include "minecraft/MinecraftInstance.h"
-#include "minecraft/PackProfile.h"
 #include "modplatform/ModIndex.h"
 #include "modplatform/flame/FlameAPI.h"
-
-static FlameAPI api;
 
 void FlameMod::loadIndexedPack(ModPlatform::IndexedPack& pack, QJsonObject& obj)
 {
@@ -15,23 +11,26 @@ void FlameMod::loadIndexedPack(ModPlatform::IndexedPack& pack, QJsonObject& obj)
     pack.provider = ModPlatform::ResourceProvider::FLAME;
     pack.name = Json::requireString(obj, "name");
     pack.slug = Json::requireString(obj, "slug");
-    pack.websiteUrl = Json::ensureString(Json::ensureObject(obj, "links"), "websiteUrl", "");
-    pack.description = Json::ensureString(obj, "summary", "");
+    pack.websiteUrl = obj["links"].toObject()["websiteUrl"].toString("");
+    pack.description = obj["summary"].toString("");
 
-    QJsonObject logo = Json::ensureObject(obj, "logo");
-    pack.logoName = Json::ensureString(logo, "title");
-    pack.logoUrl = Json::ensureString(logo, "thumbnailUrl");
+    QJsonObject logo = obj["logo"].toObject();
+    pack.logoName = logo["title"].toString();
+    pack.logoUrl = logo["thumbnailUrl"].toString();
     if (pack.logoUrl.isEmpty()) {
-        pack.logoUrl = Json::ensureString(logo, "url");
+        pack.logoUrl = logo["url"].toString();
     }
 
-    auto authors = Json::ensureArray(obj, "authors");
-    for (auto authorIter : authors) {
-        auto author = Json::requireObject(authorIter);
-        ModPlatform::ModpackAuthor packAuthor;
-        packAuthor.name = Json::requireString(author, "name");
-        packAuthor.url = Json::requireString(author, "url");
-        pack.authors.append(packAuthor);
+    auto authors = obj["authors"].toArray();
+    if (!authors.isEmpty()) {
+        pack.authors.clear();
+        for (auto authorIter : authors) {
+            auto author = Json::requireObject(authorIter);
+            ModPlatform::ModpackAuthor packAuthor;
+            packAuthor.name = Json::requireString(author, "name");
+            packAuthor.url = Json::requireString(author, "url");
+            pack.authors.append(packAuthor);
+        }
     }
 
     pack.extraDataLoaded = false;
@@ -40,33 +39,39 @@ void FlameMod::loadIndexedPack(ModPlatform::IndexedPack& pack, QJsonObject& obj)
 
 void FlameMod::loadURLs(ModPlatform::IndexedPack& pack, QJsonObject& obj)
 {
-    auto links_obj = Json::ensureObject(obj, "links");
+    auto links_obj = obj["links"].toObject();
 
-    pack.extraData.issuesUrl = Json::ensureString(links_obj, "issuesUrl");
-    if (pack.extraData.issuesUrl.endsWith('/'))
+    pack.extraData.issuesUrl = links_obj["issuesUrl"].toString();
+    if (pack.extraData.issuesUrl.endsWith('/')) {
         pack.extraData.issuesUrl.chop(1);
+    }
 
-    pack.extraData.sourceUrl = Json::ensureString(links_obj, "sourceUrl");
-    if (pack.extraData.sourceUrl.endsWith('/'))
+    pack.extraData.sourceUrl = links_obj["sourceUrl"].toString();
+    if (pack.extraData.sourceUrl.endsWith('/')) {
         pack.extraData.sourceUrl.chop(1);
+    }
 
-    pack.extraData.wikiUrl = Json::ensureString(links_obj, "wikiUrl");
-    if (pack.extraData.wikiUrl.endsWith('/'))
+    pack.extraData.wikiUrl = links_obj["wikiUrl"].toString();
+    if (pack.extraData.wikiUrl.endsWith('/')) {
         pack.extraData.wikiUrl.chop(1);
+    }
 
-    if (!pack.extraData.body.isEmpty())
+    if (!pack.extraData.body.isEmpty()) {
         pack.extraDataLoaded = true;
+    }
 }
 
 void FlameMod::loadBody(ModPlatform::IndexedPack& pack)
 {
-    pack.extraData.body = api.getModDescription(pack.addonId.toInt());
+    pack.extraData.body = FlameAPI().getModDescription(pack.addonId.toInt());
 
-    if (!pack.extraData.issuesUrl.isEmpty() || !pack.extraData.sourceUrl.isEmpty() || !pack.extraData.wikiUrl.isEmpty())
+    if (!pack.extraData.issuesUrl.isEmpty() || !pack.extraData.sourceUrl.isEmpty() || !pack.extraData.wikiUrl.isEmpty()) {
         pack.extraDataLoaded = true;
+    }
 }
 
-static QString enumToString(int hash_algorithm)
+namespace {
+QString enumToString(int hash_algorithm)
 {
     switch (hash_algorithm) {
         default:
@@ -76,6 +81,7 @@ static QString enumToString(int hash_algorithm)
             return "md5";
     }
 }
+}  // namespace
 
 void FlameMod::loadIndexedPackVersions(ModPlatform::IndexedPack& pack, QJsonArray& arr)
 {
@@ -84,11 +90,13 @@ void FlameMod::loadIndexedPackVersions(ModPlatform::IndexedPack& pack, QJsonArra
         auto obj = versionIter.toObject();
 
         auto file = loadIndexedPackVersion(obj);
-        if (!file.addonId.isValid())
+        if (!file.addonId.isValid()) {
             file.addonId = pack.addonId;
+        }
 
-        if (file.fileId.isValid())  // Heuristic to check if the returned value is valid
+        if (file.fileId.isValid()) {  // Heuristic to check if the returned value is valid
             unsortedVersions.append(file);
+        }
     }
 
     auto orderSortPredicate = [](const ModPlatform::IndexedVersion& a, const ModPlatform::IndexedVersion& b) -> bool {
@@ -108,27 +116,29 @@ auto FlameMod::loadIndexedPackVersion(QJsonObject& obj, bool load_changelog) -> 
     for (auto mcVer : versionArray) {
         auto str = mcVer.toString();
 
-        if (str.contains('.'))
+        if (str.contains('.')) {
             file.mcVersion.append(str);
+        }
 
-        file.side = ModPlatform::Side::NoSide;
-        if (auto loader = str.toLower(); loader == "neoforge")
+        file.side = ModPlatform::SideType::NoSide;
+        if (auto loader = str.toLower(); loader == "neoforge") {
             file.loaders |= ModPlatform::NeoForge;
-        else if (loader == "forge")
+        } else if (loader == "forge") {
             file.loaders |= ModPlatform::Forge;
-        else if (loader == "cauldron")
+        } else if (loader == "cauldron") {
             file.loaders |= ModPlatform::Cauldron;
-        else if (loader == "liteloader")
+        } else if (loader == "liteloader") {
             file.loaders |= ModPlatform::LiteLoader;
-        else if (loader == "fabric")
+        } else if (loader == "fabric") {
             file.loaders |= ModPlatform::Fabric;
-        else if (loader == "quilt")
+        } else if (loader == "quilt") {
             file.loaders |= ModPlatform::Quilt;
-        else if (loader == "server" || loader == "client") {
-            if (file.side == ModPlatform::Side::NoSide)
-                file.side = ModPlatform::SideUtils::fromString(loader);
-            else if (file.side != ModPlatform::SideUtils::fromString(loader))
-                file.side = ModPlatform::Side::UniversalSide;
+        } else if (loader == "server" || loader == "client") {
+            if (!file.side.isValid()) {
+                file.side = ModPlatform::SideType::fromString(loader);
+            } else if (file.side != ModPlatform::SideType::fromString(loader)) {
+                file.side = ModPlatform::SideType::UniversalSide;
+            }
         }
     }
 
@@ -136,31 +146,32 @@ auto FlameMod::loadIndexedPackVersion(QJsonObject& obj, bool load_changelog) -> 
     file.fileId = Json::requireInteger(obj, "id");
     file.date = Json::requireString(obj, "fileDate");
     file.version = Json::requireString(obj, "displayName");
-    file.downloadUrl = Json::ensureString(obj, "downloadUrl");
+    file.downloadUrl = obj["downloadUrl"].toString();
     file.fileName = Json::requireString(obj, "fileName");
     file.fileName = FS::RemoveInvalidPathChars(file.fileName);
 
-    ModPlatform::IndexedVersionType::VersionType ver_type;
+    ModPlatform::IndexedVersionType ver_type;
     switch (Json::requireInteger(obj, "releaseType")) {
         case 1:
-            ver_type = ModPlatform::IndexedVersionType::VersionType::Release;
+            ver_type = ModPlatform::IndexedVersionType::Release;
             break;
         case 2:
-            ver_type = ModPlatform::IndexedVersionType::VersionType::Beta;
+            ver_type = ModPlatform::IndexedVersionType::Beta;
             break;
         case 3:
-            ver_type = ModPlatform::IndexedVersionType::VersionType::Alpha;
+            ver_type = ModPlatform::IndexedVersionType::Alpha;
             break;
         default:
-            ver_type = ModPlatform::IndexedVersionType::VersionType::Unknown;
+            ver_type = ModPlatform::IndexedVersionType::Unknown;
+            break;
     }
-    file.version_type = ModPlatform::IndexedVersionType(ver_type);
+    file.version_type = ver_type;
 
-    auto hash_list = Json::ensureArray(obj, "hashes");
+    auto hash_list = obj["hashes"].toArray();
     for (auto h : hash_list) {
-        auto hash_entry = Json::ensureObject(h);
+        auto hash_entry = h.toObject();
         auto hash_types = ModPlatform::ProviderCapabilities::hashType(ModPlatform::ResourceProvider::FLAME);
-        auto hash_algo = enumToString(Json::ensureInteger(hash_entry, "algo", 1, "algorithm"));
+        auto hash_algo = enumToString(hash_entry["algo"].toInt(1));
         if (hash_types.contains(hash_algo)) {
             file.hash = Json::requireString(hash_entry, "value");
             file.hash_type = hash_algo;
@@ -168,9 +179,9 @@ auto FlameMod::loadIndexedPackVersion(QJsonObject& obj, bool load_changelog) -> 
         }
     }
 
-    auto dependencies = Json::ensureArray(obj, "dependencies");
+    auto dependencies = obj["dependencies"].toArray();
     for (auto d : dependencies) {
-        auto dep = Json::ensureObject(d);
+        auto dep = d.toObject();
         ModPlatform::Dependency dependency;
         dependency.addonId = Json::requireInteger(dep, "modId");
         switch (Json::requireInteger(dep, "relationType")) {
@@ -199,8 +210,9 @@ auto FlameMod::loadIndexedPackVersion(QJsonObject& obj, bool load_changelog) -> 
         file.dependencies.append(dependency);
     }
 
-    if (load_changelog)
-        file.changelog = api.getModFileChangelog(file.addonId.toInt(), file.fileId.toInt());
+    if (load_changelog) {
+        file.changelog = FlameAPI().getModFileChangelog(file.addonId.toInt(), file.fileId.toInt());
+    }
 
     return file;
 }

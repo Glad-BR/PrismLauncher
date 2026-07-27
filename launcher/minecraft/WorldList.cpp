@@ -34,9 +34,9 @@
  */
 
 #include "WorldList.h"
+#include "WorldTasks.h"
 
 #include <FileSystem.h>
-#include <qmimedata.h>
 #include <QDebug>
 #include <QDirIterator>
 #include <QFileSystemWatcher>
@@ -65,9 +65,9 @@ void WorldList::startWatching()
     update();
     m_isWatching = m_watcher->addPath(m_dir.absolutePath());
     if (m_isWatching) {
-        qDebug() << "Started watching " << m_dir.absolutePath();
+        qDebug() << "Started watching" << m_dir.absolutePath();
     } else {
-        qDebug() << "Failed to start watching " << m_dir.absolutePath();
+        qDebug() << "Failed to start watching" << m_dir.absolutePath();
     }
 }
 
@@ -78,9 +78,9 @@ void WorldList::stopWatching()
     }
     m_isWatching = !m_watcher->removePath(m_dir.absolutePath());
     if (!m_isWatching) {
-        qDebug() << "Stopped watching " << m_dir.absolutePath();
+        qDebug() << "Stopped watching" << m_dir.absolutePath();
     } else {
-        qDebug() << "Failed to stop watching " << m_dir.absolutePath();
+        qDebug() << "Failed to stop watching" << m_dir.absolutePath();
     }
 }
 
@@ -124,18 +124,23 @@ QString WorldList::instDirPath() const
     return QFileInfo(m_instance->instanceRoot()).absoluteFilePath();
 }
 
-bool WorldList::deleteWorld(int index)
+bool WorldList::removeWorldFromModel(const QFileInfo& sourceFile)
 {
-    if (index >= m_worlds.size() || index < 0)
-        return false;
-    World& m = m_worlds[index];
-    if (m.destroy()) {
-        beginRemoveRows(QModelIndex(), index, index);
-        m_worlds.removeAt(index);
+    const auto sourcePath = sourceFile.absoluteFilePath();
+
+    for (int row = 0; row < m_worlds.size(); ++row) {
+        if (m_worlds.at(row).container().absoluteFilePath() != sourcePath) {
+            continue;
+        }
+
+        beginRemoveRows(QModelIndex(), row, row);
+        m_worlds.removeAt(row);
         endRemoveRows();
+
         emit changed();
         return true;
     }
+
     return false;
 }
 
@@ -158,7 +163,8 @@ bool WorldList::resetIcon(int row)
         return false;
     World& m = m_worlds[row];
     if (m.resetIcon()) {
-        emit dataChanged(index(row), index(row), { WorldList::IconFileRole });
+        QModelIndex modelIndex = index(row, NameColumn);
+        emit dataChanged(modelIndex, modelIndex, { WorldList::IconFileRole });
         return true;
     }
     return false;
@@ -352,12 +358,52 @@ Qt::DropActions WorldList::supportedDropActions() const
 
 void WorldList::installWorld(QFileInfo filename)
 {
-    qDebug() << "installing: " << filename.absoluteFilePath();
+    qDebug() << "installing:" << filename.absoluteFilePath();
     World w(filename);
     if (!w.isValid()) {
         return;
     }
     w.install(m_dir.absolutePath());
+}
+
+std::unique_ptr<Task> WorldList::createInstallWorldTask(QFileInfo filename)
+{
+    return std::make_unique<InstallWorldTask>(InstallWorldTask::Args{
+        .worlds = this,
+        .sourceFile = filename,
+        .targetDir = m_dir.absolutePath(),
+    });
+}
+
+std::unique_ptr<Task> WorldList::createCopyWorldTask(int index, const QString& name)
+{
+    if (index >= m_worlds.size() || index < 0) {
+        return nullptr;
+    }
+
+    const auto& world = m_worlds.at(index);
+
+    return std::make_unique<CopyWorldTask>(CopyWorldTask::Args{
+        .worlds = this,
+        .sourceFile = world.container(),
+        .targetDir = m_dir.absolutePath(),
+        .targetName = name,
+    });
+}
+
+std::unique_ptr<Task> WorldList::createDeleteWorldTask(int index)
+{
+    if (index >= m_worlds.size() || index < 0) {
+        return nullptr;
+    }
+
+    const auto& world = m_worlds.at(index);
+
+    return std::make_unique<DeleteWorldTask>(DeleteWorldTask::Args{
+        .worlds = this,
+        .sourceFile = world.container(),
+        .displayName = world.name(),
+    });
 }
 
 bool WorldList::dropMimeData(const QMimeData* data,
@@ -427,7 +473,7 @@ void WorldList::loadWorldsAsync()
                         m_worlds[row].setSize(size);
 
                         // Notify views
-                        QModelIndex modelIndex = index(row);
+                        QModelIndex modelIndex = index(row, SizeColumn);
                         emit dataChanged(modelIndex, modelIndex, { SizeRole });
                     }
                 },

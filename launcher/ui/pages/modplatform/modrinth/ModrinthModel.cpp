@@ -47,6 +47,7 @@
 #include "net/ApiDownload.h"
 
 #include <QMessageBox>
+#include <memory>
 
 namespace Modrinth {
 
@@ -134,18 +135,26 @@ void ModpackListModel::performPaginatedSearch()
         return;
     static const ModrinthAPI api;
 
-    if (m_currentSearchTerm.startsWith("#")) {
+    // Modrinth ids are not limited to numbers and can be any length
+    if (m_searchState != ResetRequested && m_currentSearchTerm.startsWith("#")) {
         auto projectId = m_currentSearchTerm.mid(1);
         if (!projectId.isEmpty()) {
-            ResourceAPI::Callback<ModPlatform::IndexedPack> callbacks;
+            ResourceAPI::Callback<ModPlatform::IndexedPack::Ptr> callbacks;
 
-            callbacks.on_fail = [this](QString reason, int) { searchRequestFailed(reason); };
+            callbacks.on_fail = [this](QString reason, int network_error_code) {
+                if (network_error_code == 404) {
+                    m_searchState = ResetRequested;
+                }
+                searchRequestFailed(reason, network_error_code);
+            };
             callbacks.on_succeed = [this](auto& pack) { searchRequestForOneSucceeded(pack); };
             callbacks.on_abort = [this] {
                 qCritical() << "Search task aborted by an unknown reason!";
-                searchRequestFailed("Aborted");
+                searchRequestFailed("Aborted", 0);
             };
-            if (auto job = api.getProjectInfo({ projectId }, std::move(callbacks)); job) {
+            auto project = std::make_shared<ModPlatform::IndexedPack>();
+            project->addonId = projectId;
+            if (auto job = api.getProjectInfo({ project }, std::move(callbacks), false); job) {
                 m_jobPtr = job;
                 m_jobPtr->start();
             }
@@ -158,10 +167,14 @@ void ModpackListModel::performPaginatedSearch()
     ResourceAPI::Callback<QList<ModPlatform::IndexedPack::Ptr>> callbacks{};
 
     callbacks.on_succeed = [this](auto& doc) { searchRequestFinished(doc); };
-    callbacks.on_fail = [this](QString reason, int) { searchRequestFailed(reason); };
+    callbacks.on_fail = [this](QString reason, int network_error_code) { searchRequestFailed(reason, network_error_code); };
+    callbacks.on_abort = [this] {
+        qCritical() << "Search task aborted by an unknown reason!";
+        searchRequestFailed("Aborted", 0);
+    };
 
     auto netJob = api.searchProjects({ ModPlatform::ResourceType::Modpack, m_nextSearchOffset, m_currentSearchTerm, sort, m_filter->loaders,
-                                       m_filter->versions, ModPlatform::Side::NoSide, m_filter->categoryIds, m_filter->openSource },
+                                       m_filter->versions, ModPlatform::SideType::NoSide, m_filter->categoryIds, m_filter->openSource },
                                      std::move(callbacks));
 
     m_jobPtr = netJob;
@@ -300,22 +313,21 @@ void ModpackListModel::searchRequestFinished(QList<ModPlatform::IndexedPack::Ptr
     endInsertRows();
 }
 
-void ModpackListModel::searchRequestForOneSucceeded(ModPlatform::IndexedPack& pack)
+void ModpackListModel::searchRequestForOneSucceeded(ModPlatform::IndexedPack::Ptr pack)
 {
     m_jobPtr.reset();
 
     beginInsertRows(QModelIndex(), m_modpacks.size(), m_modpacks.size() + 1);
-    m_modpacks.append(std::make_shared<ModPlatform::IndexedPack>(pack));
+    m_modpacks.append(pack);
     endInsertRows();
 }
 
-void ModpackListModel::searchRequestFailed(QString)
+void ModpackListModel::searchRequestFailed(QString reason, int network_error_code)
 {
-    auto failed_action = dynamic_cast<NetJob*>(m_jobPtr.get())->getFailedActions().at(0);
-    if (failed_action->replyStatusCode() == -1) {
-        // Network error
+    if (network_error_code == -1) {
+        // Unknown error in network stack
         QMessageBox::critical(nullptr, tr("Error"), tr("A network error occurred. Could not load modpacks."));
-    } else if (failed_action->replyStatusCode() == 409) {
+    } else if (network_error_code == 409) {
         // 409 Gone, notify user to update
         QMessageBox::critical(nullptr, tr("Error"),
                               //: %1 refers to the launcher itself

@@ -33,39 +33,23 @@
  *      limitations under the License.
  */
 
+#include <iostream>
+
 #include "Application.h"
 
-// #define BREAK_INFINITE_LOOP
-// #define BREAK_EXCEPTION
-// #define BREAK_RETURN
-
-#ifdef BREAK_INFINITE_LOOP
-#include <chrono>
-#include <thread>
+#if defined Q_OS_WIN32
+#include "console/WindowsConsole.h"
 #endif
 
 int main(int argc, char* argv[])
 {
-#ifdef BREAK_INFINITE_LOOP
-    while (true) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(250));
-    }
-#endif
-#ifdef BREAK_EXCEPTION
-    throw 42;
-#endif
-#ifdef BREAK_RETURN
-    return 42;
-#endif
-
-#if QT_VERSION <= QT_VERSION_CHECK(6, 0, 0)
-    QApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
-    QGuiApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
+#if defined Q_OS_WIN32
+    // used on Windows to attach the standard IO streams
+    console::WindowsConsoleGuard _consoleGuard;
 #endif
 
     // initialize Qt
     Application app(argc, argv);
-
     switch (app.status()) {
         case Application::StartingUp:
         case Application::Initialized: {

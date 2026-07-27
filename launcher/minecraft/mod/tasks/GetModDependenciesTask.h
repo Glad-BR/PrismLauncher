@@ -23,6 +23,7 @@
 #include <QVariant>
 #include <functional>
 #include <memory>
+#include <utility>
 
 #include "minecraft/mod/MetadataHandler.h"
 #include "minecraft/mod/ModFolderModel.h"
@@ -44,16 +45,13 @@ class GetModDependenciesTask : public SequentialTask {
         ModPlatform::IndexedPack::Ptr pack;
         ModPlatform::IndexedVersion version;
         PackDependency() = default;
-        PackDependency(const ModPlatform::IndexedPack::Ptr p, const ModPlatform::IndexedVersion& v)
-        {
-            pack = p;
-            version = v;
-        }
+        PackDependency(ModPlatform::IndexedPack::Ptr p, ModPlatform::IndexedVersion v) : pack(std::move(p)), version(std::move(v)) {}
     };
 
     struct PackDependencyExtraInfo {
-        bool maybe_installed;
-        QStringList required_by;
+        bool maybe_installed{};
+        QStringList required_by_names;
+        QStringList required_by_ids;
     };
 
     explicit GetModDependenciesTask(BaseInstance* instance, ModFolderModel* folder, QList<std::shared_ptr<PackDependency>> selected);
@@ -62,12 +60,12 @@ class GetModDependenciesTask : public SequentialTask {
     QHash<QString, PackDependencyExtraInfo> getExtraInfo();
 
    private:
-    inline ResourceAPI* getAPI(ModPlatform::ResourceProvider provider)
+    ResourceAPI* getAPI(ModPlatform::ResourceProvider provider)
     {
-        if (provider == ModPlatform::ResourceProvider::FLAME)
+        if (provider == ModPlatform::ResourceProvider::FLAME) {
             return &m_flameAPI;
-        else
-            return &m_modrinthAPI;
+        }
+        return &m_modrinthAPI;
     }
 
    protected slots:
